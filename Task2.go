@@ -265,7 +265,7 @@ func main() {
 
 			var condition string
 			fmt.Print("Condition (e.g. id=1): ")
-			fmt.Scanln(&condition)
+			fmt.Scan(&condition)
 
 			update(tableName, data, condition)
 
