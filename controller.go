@@ -2,19 +2,24 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 )
 
 type Request struct {
-	Command   string `json:"command"`
-	Wallpaper string `json:"wallpaper,omitempty"`
+	Command       string `json:"command"`
+	Wallpaper     string `json:"wallpaper,omitempty"`
+	WallpaperName string `json:"wallpaper_name,omitempty"`
+	WallpaperData string `json:"wallpaper_data,omitempty"`
 }
 
 type Response struct {
@@ -41,7 +46,7 @@ func main() {
 	defer listener.Close()
 
 	log.Printf("controller listening on :%d", *port)
-	log.Println(`type "lock", "shutdown", "wallpaper C:\path\image.jpg", "list", or "exit"`)
+	log.Println("agents can connect now")
 
 	var (
 		agentsMu sync.RWMutex
@@ -52,33 +57,34 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("> ")
+		showMenu()
+		fmt.Print("Choose a number: ")
 		if !scanner.Scan() {
 			log.Println("input closed, shutting down controller")
 			return
 		}
 
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+		switch strings.TrimSpace(scanner.Text()) {
+		case "1":
+			broadcast(Request{Command: "lock"}, &agentsMu, agents)
+		case "2":
+			broadcast(Request{Command: "shutdown"}, &agentsMu, agents)
+		case "3":
+			req, err := buildWallpaperRequest()
+			if err != nil {
+				log.Printf("wallpaper selection failed: %v", err)
+				continue
+			}
 
-		switch strings.ToLower(line) {
-		case "exit", "quit":
+			broadcast(req, &agentsMu, agents)
+		case "4":
+			printAgents(&agentsMu, agents)
+		case "5":
 			log.Println("controller stopped")
 			return
-		case "list":
-			printAgents(&agentsMu, agents)
-			continue
+		default:
+			log.Println("invalid choice")
 		}
-
-		req, err := parseCommand(line)
-		if err != nil {
-			log.Printf("invalid command: %v", err)
-			continue
-		}
-
-		broadcast(req, &agentsMu, agents)
 	}
 }
 
@@ -136,26 +142,6 @@ func printAgents(agentsMu *sync.RWMutex, agents map[string]*Agent) {
 	fmt.Println("connected agents:")
 	for id, agent := range agents {
 		fmt.Printf("- %s (%s)\n", agent.Name, id)
-	}
-}
-
-func parseCommand(line string) (Request, error) {
-	parts := strings.SplitN(strings.TrimSpace(line), " ", 2)
-	command := strings.ToLower(strings.TrimSpace(parts[0]))
-
-	req := Request{Command: command}
-	switch command {
-	case "lock", "shutdown":
-		return req, nil
-	case "wallpaper":
-		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-			return Request{}, fmt.Errorf("wallpaper command requires a path")
-		}
-
-		req.Wallpaper = strings.TrimSpace(parts[1])
-		return req, nil
-	default:
-		return Request{}, fmt.Errorf("supported commands are: lock, shutdown, wallpaper <path>, list, exit")
 	}
 }
 
@@ -220,4 +206,55 @@ func removeAgent(agentID string, agent *Agent, agentsMu *sync.RWMutex, agents ma
 	agentsMu.Lock()
 	delete(agents, agentID)
 	agentsMu.Unlock()
+}
+
+func showMenu() {
+	fmt.Println()
+	fmt.Println("1. Lock all connected devices")
+	fmt.Println("2. Shutdown all connected devices")
+	fmt.Println("3. Change wallpaper on all connected devices")
+	fmt.Println("4. Show connected devices")
+	fmt.Println("5. Exit")
+}
+
+func buildWallpaperRequest() (Request, error) {
+	imagePath, err := chooseImageFile()
+	if err != nil {
+		return Request{}, err
+	}
+
+	data, err := os.ReadFile(imagePath)
+	if err != nil {
+		return Request{}, fmt.Errorf("failed to read image: %w", err)
+	}
+
+	return Request{
+		Command:       "wallpaper",
+		Wallpaper:     imagePath,
+		WallpaperName: filepath.Base(imagePath),
+		WallpaperData: base64.StdEncoding.EncodeToString(data),
+	}, nil
+}
+
+func chooseImageFile() (string, error) {
+	script := `[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Filter = "Image Files|*.jpg;*.jpeg;*.png;*.bmp"
+$dialog.Multiselect = $false
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.FileName
+}`
+
+	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-Command", script)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to open file picker")
+	}
+
+	selected := strings.TrimSpace(string(output))
+	if selected == "" {
+		return "", fmt.Errorf("no image selected")
+	}
+
+	return selected, nil
 }

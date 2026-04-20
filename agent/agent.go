@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,14 +11,17 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 )
 
 type Request struct {
-	Command   string `json:"command"`
-	Wallpaper string `json:"wallpaper,omitempty"`
+	Command       string `json:"command"`
+	Wallpaper     string `json:"wallpaper,omitempty"`
+	WallpaperName string `json:"wallpaper_name,omitempty"`
+	WallpaperData string `json:"wallpaper_data,omitempty"`
 }
 
 type Response struct {
@@ -91,13 +95,32 @@ func executeCommand(req Request) error {
 	case "shutdown":
 		return shutdownDevice()
 	case "wallpaper":
-		if strings.TrimSpace(req.Wallpaper) == "" {
-			return errors.New("wallpaper path is required for wallpaper command")
+		if strings.TrimSpace(req.WallpaperData) == "" {
+			return errors.New("wallpaper image data is required for wallpaper command")
 		}
-		return changeWallpaper(req.Wallpaper)
+		return saveAndSetWallpaper(req)
 	default:
 		return fmt.Errorf("unsupported command: %s", req.Command)
 	}
+}
+
+func saveAndSetWallpaper(req Request) error {
+	imageBytes, err := base64.StdEncoding.DecodeString(req.WallpaperData)
+	if err != nil {
+		return fmt.Errorf("failed to decode wallpaper: %w", err)
+	}
+
+	fileName := strings.TrimSpace(req.WallpaperName)
+	if fileName == "" {
+		fileName = "wallpaper.jpg"
+	}
+
+	targetPath := filepath.Join(os.TempDir(), "distributed-controller-"+filepath.Base(fileName))
+	if err := os.WriteFile(targetPath, imageBytes, 0644); err != nil {
+		return fmt.Errorf("failed to save wallpaper: %w", err)
+	}
+
+	return changeWallpaper(targetPath)
 }
 
 func lockDevice() error {
