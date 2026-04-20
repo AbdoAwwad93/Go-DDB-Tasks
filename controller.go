@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -237,6 +238,17 @@ func buildWallpaperRequest() (Request, error) {
 }
 
 func chooseImageFile() (string, error) {
+	switch runtime.GOOS {
+	case "windows":
+		return chooseImageFileWindows()
+	case "linux":
+		return chooseImageFileLinux()
+	default:
+		return chooseImageFileManual()
+	}
+}
+
+func chooseImageFileWindows() (string, error) {
 	script := `[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
 $dialog.Filter = "Image Files|*.jpg;*.jpeg;*.png;*.bmp"
@@ -256,5 +268,77 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 		return "", fmt.Errorf("no image selected")
 	}
 
-	return selected, nil
+	return validateImagePath(selected)
+}
+
+func chooseImageFileLinux() (string, error) {
+	pickers := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "zenity",
+			args: []string{
+				"--file-selection",
+				"--title=Choose wallpaper",
+				"--file-filter=Image files | *.jpg *.jpeg *.png *.bmp",
+			},
+		},
+		{
+			name: "kdialog",
+			args: []string{
+				"--getopenfilename",
+				".",
+				"*.jpg *.jpeg *.png *.bmp | Image files",
+			},
+		},
+	}
+
+	for _, picker := range pickers {
+		if _, err := exec.LookPath(picker.name); err != nil {
+			continue
+		}
+
+		output, err := exec.Command(picker.name, picker.args...).Output()
+		if err != nil {
+			continue
+		}
+
+		selected := strings.TrimSpace(string(output))
+		if selected == "" {
+			continue
+		}
+
+		return validateImagePath(selected)
+	}
+
+	return chooseImageFileManual()
+}
+
+func chooseImageFileManual() (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Enter the full path to the wallpaper image: ")
+
+	selected, err := reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("failed to read image path: %w", err)
+	}
+
+	selected = strings.TrimSpace(selected)
+	if selected == "" {
+		return "", fmt.Errorf("no image selected")
+	}
+
+	return validateImagePath(selected)
+}
+
+func validateImagePath(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to access image: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("selected path is a directory")
+	}
+	return path, nil
 }
